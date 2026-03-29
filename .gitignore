@@ -9,14 +9,23 @@ store/
 data/
 logs/
 
-# Groups - only track base structure and specific CLAUDE.md files
+# Groups - only track base structure and CLAUDE.md files
 groups/*
 !groups/main/
 !groups/global/
+!groups/telegram_learning/
+!groups/telegram_challenges/
+!groups/telegram_parents/
 groups/main/*
 groups/global/*
+groups/telegram_learning/*
+groups/telegram_challenges/*
+groups/telegram_parents/*
 !groups/main/CLAUDE.md
 !groups/global/CLAUDE.md
+!groups/telegram_learning/CLAUDE.md
+!groups/telegram_challenges/CLAUDE.md
+!groups/telegram_parents/CLAUDE.md
 
 # Secrets
 *.keys.json

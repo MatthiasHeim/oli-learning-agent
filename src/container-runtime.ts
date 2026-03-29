@@ -5,7 +5,13 @@
 import { execSync } from 'child_process';
 import os from 'os';
 
+import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
+
+const childProcessEnv = readEnvFile(['NANOCLAW_CHILD_PROCESS']);
+const isChildProcessMode =
+  process.env.NANOCLAW_CHILD_PROCESS === '1' ||
+  childProcessEnv.NANOCLAW_CHILD_PROCESS === '1';
 
 /** The container runtime binary name. */
 export const CONTAINER_RUNTIME_BIN = 'docker';
@@ -35,8 +41,13 @@ export function stopContainer(name: string): void {
   execSync(`${CONTAINER_RUNTIME_BIN} stop -t 1 ${name}`, { stdio: 'pipe' });
 }
 
-/** Ensure the container runtime is running, starting it if needed. */
+/** Ensure the container runtime is running, starting it if needed.
+ *  Skipped entirely in child-process mode (NANOCLAW_CHILD_PROCESS=1). */
 export function ensureContainerRuntimeRunning(): void {
+  if (isChildProcessMode) {
+    logger.info('Child-process mode enabled, skipping container runtime check');
+    return;
+  }
   try {
     execSync(`${CONTAINER_RUNTIME_BIN} info`, {
       stdio: 'pipe',
@@ -75,8 +86,10 @@ export function ensureContainerRuntimeRunning(): void {
   }
 }
 
-/** Kill orphaned NanoClaw containers from previous runs. */
+/** Kill orphaned NanoClaw containers from previous runs.
+ *  No-op in child-process mode. */
 export function cleanupOrphans(): void {
+  if (isChildProcessMode) return;
   try {
     const output = execSync(
       `${CONTAINER_RUNTIME_BIN} ps --filter name=nanoclaw- --format '{{.Names}}'`,

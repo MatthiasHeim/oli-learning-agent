@@ -337,6 +337,285 @@ Use available_groups.json to find the JID for a group. The folder name must be c
   },
 );
 
+// ---------------------------------------------------------------------------
+// Learning Map API tools
+// ---------------------------------------------------------------------------
+
+const LEARNING_MAP_API_URL = process.env.LEARNING_MAP_API_URL || '';
+const LEARNING_MAP_API_KEY = process.env.LEARNING_MAP_API_KEY || '';
+const DEFAULT_STUDENT_ID = process.env.OLIVIA_STUDENT_ID || '32c76bee-d061-4fd5-a6b7-c37ce4e8e917';
+
+async function learningMapFetch(path: string, options?: RequestInit): Promise<unknown> {
+  const url = `${LEARNING_MAP_API_URL}${path}`;
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': LEARNING_MAP_API_KEY,
+      ...(options?.headers || {}),
+    },
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Learning Map API ${res.status}: ${text.slice(0, 500)}`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+server.tool(
+  'learning_map_query_context',
+  'Query the Learning Map for objectives related to a topic. Returns related objectives with mastery levels, outer fringe (next things to learn), and connections.',
+  {
+    query: z.string().describe('The topic or question to search for'),
+    student_id: z.string().optional().describe('Student ID (defaults to Olivia)'),
+  },
+  async (args) => {
+    try {
+      const sid = args.student_id || DEFAULT_STUDENT_ID;
+      const params = new URLSearchParams({ query: args.query, student_id: sid });
+      // Try /objectives/context first, fall back to /objectives/search
+      let result: unknown;
+      try {
+        result = await learningMapFetch(`/objectives/context?${params}`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('404') || msg.includes('Not Found')) {
+          result = await learningMapFetch(`/objectives/search?${params}`);
+        } else {
+          throw err;
+        }
+      }
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (err) {
+      return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  'learning_map_record_interaction',
+  'Record a learning interaction (practice, exposure, or assessment) for a student.',
+  {
+    objective_text: z.string().describe('The learning objective text'),
+    interaction_type: z.enum(['practice', 'exposure', 'assessment']).describe('Type of interaction'),
+    outcome: z.object({}).passthrough().describe('Outcome data (e.g. { "score": 0.8, "notes": "..." })'),
+    student_id: z.string().optional().describe('Student ID (defaults to Olivia)'),
+  },
+  async (args) => {
+    try {
+      const result = await learningMapFetch('/interactions/', {
+        method: 'POST',
+        body: JSON.stringify({
+          student_id: args.student_id || DEFAULT_STUDENT_ID,
+          objective_text: args.objective_text,
+          interaction_type: args.interaction_type,
+          outcome: args.outcome,
+          source: 'telegram_agent',
+        }),
+      });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (err) {
+      return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  'learning_map_get_recommendations',
+  'Get prioritized learning objective recommendations for a student.',
+  {
+    student_id: z.string().optional().describe('Student ID (defaults to Olivia)'),
+    limit: z.number().optional().describe('Max recommendations to return (default 5)'),
+  },
+  async (args) => {
+    try {
+      const sid = args.student_id || DEFAULT_STUDENT_ID;
+      const limit = args.limit || 5;
+      const result = await learningMapFetch(`/mastery/student/${sid}/recommendations?limit=${limit}`);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (err) {
+      return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  'learning_map_get_mastery_summary',
+  'Get the full mastery state for a student — all objectives and their mastery levels.',
+  {
+    student_id: z.string().optional().describe('Student ID (defaults to Olivia)'),
+  },
+  async (args) => {
+    try {
+      const sid = args.student_id || DEFAULT_STUDENT_ID;
+      const result = await learningMapFetch(`/mastery/student/${sid}`);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (err) {
+      return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  'learning_map_search_resources',
+  'Search for learning resources by topic, type, or keyword.',
+  {
+    query: z.string().describe('Search query'),
+    resource_type: z.string().optional().describe('Filter by type (e.g. "video", "article", "worksheet")'),
+    limit: z.number().optional().describe('Max results (default 5)'),
+  },
+  async (args) => {
+    try {
+      const params = new URLSearchParams({ query: args.query });
+      if (args.resource_type) params.set('resource_type', args.resource_type);
+      params.set('limit', String(args.limit || 5));
+      const result = await learningMapFetch(`/resources/search?${params}`);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (err) {
+      return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  'learning_map_add_resource',
+  'Add a learning resource to the Learning Map (e.g. textbook page, video, article).',
+  {
+    title: z.string().describe('Resource title'),
+    description: z.string().describe('Resource description'),
+    resource_type: z.string().describe('Type (e.g. "article", "video", "worksheet", "textbook", "activity")'),
+    tags: z.array(z.string()).optional().describe('Tags for categorization'),
+    source_url: z.string().optional().describe('URL if applicable'),
+    extracted_text: z.string().optional().describe('Extracted text content'),
+    objective_texts: z.array(z.string()).optional().describe('Related learning objective texts'),
+  },
+  async (args) => {
+    try {
+      const result = await learningMapFetch('/resources/', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: args.title,
+          description: args.description,
+          resource_type: args.resource_type,
+          tags: args.tags,
+          source_url: args.source_url,
+          extracted_text: args.extracted_text,
+          objective_texts: args.objective_texts,
+        }),
+      });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (err) {
+      return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  'learning_map_get_learning_map',
+  'Get the hierarchical learning map showing all domains, subjects, and objectives with mastery.',
+  {
+    student_id: z.string().optional().describe('Student ID (defaults to Olivia)'),
+  },
+  async (args) => {
+    try {
+      const sid = args.student_id || DEFAULT_STUDENT_ID;
+      const result = await learningMapFetch(`/mastery/student/${sid}/learning-map`);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (err) {
+      return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Image generation tool (Gemini)
+// ---------------------------------------------------------------------------
+
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+
+server.tool(
+  'generate_image',
+  'Generate an educational illustration using Gemini. Images are optimized for an 11-year-old learner. Returns the image as a base64-encoded PNG that can be sent via Telegram.',
+  {
+    prompt: z.string().describe('What to illustrate (e.g. "diagram of the water cycle", "visual puzzle about fractions")'),
+  },
+  async (args) => {
+    if (!GEMINI_API_KEY) {
+      return { content: [{ type: 'text' as const, text: 'Error: GEMINI_API_KEY not configured' }], isError: true };
+    }
+
+    const fullPrompt = `Educational illustration for an 11-year-old. Clear, colorful, labeled. ${args.prompt}`;
+
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: fullPrompt }] }],
+            generationConfig: {
+              responseModalities: ['IMAGE', 'TEXT'],
+              responseMimeType: 'image/png',
+            },
+          }),
+        },
+      );
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Gemini API ${res.status}: ${errText.slice(0, 300)}`);
+      }
+
+      const data = await res.json() as {
+        candidates?: Array<{
+          content?: {
+            parts?: Array<{
+              inlineData?: { mimeType: string; data: string };
+              text?: string;
+            }>;
+          };
+        }>;
+      };
+
+      const parts = data.candidates?.[0]?.content?.parts || [];
+      const imagePart = parts.find((p) => p.inlineData?.data);
+
+      if (!imagePart?.inlineData) {
+        const textPart = parts.find((p) => p.text);
+        return {
+          content: [{ type: 'text' as const, text: `Image generation failed. Model response: ${textPart?.text || 'No output'}` }],
+          isError: true,
+        };
+      }
+
+      // Write image to temp file so agent can send it via Telegram
+      const imgPath = `/tmp/generated-${Date.now()}.png`;
+      fs.writeFileSync(imgPath, Buffer.from(imagePart.inlineData.data, 'base64'));
+
+      return {
+        content: [
+          { type: 'text' as const, text: `Image generated and saved to ${imgPath}. Use this path to send via Telegram.` },
+          {
+            type: 'image' as const,
+            data: imagePart.inlineData.data,
+            mimeType: 'image/png',
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Error generating image: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

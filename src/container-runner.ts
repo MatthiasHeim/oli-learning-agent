@@ -1,8 +1,14 @@
 /**
  * Container Runner for NanoClaw
- * Spawns agent execution in containers and handles IPC
+ * Spawns agent execution in containers and handles IPC.
+ *
+ * Supports two modes:
+ * - Container mode (default): Runs agent-runner inside Docker/Apple Container
+ * - Child-process mode (NANOCLAW_CHILD_PROCESS=1): Runs agent-runner as a
+ *   direct Node.js child process. Used for Railway and other environments
+ *   where Docker-in-Docker is not available.
  */
-import { ChildProcess, spawn } from 'child_process';
+import { ChildProcess, execSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -25,10 +31,17 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { OneCLI } from '@onecli-sh/sdk';
+import { readEnvFile } from './env.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
 const onecli = new OneCLI({ url: ONECLI_URL });
+
+/** Whether to run agent-runner as a child process instead of in a container. */
+const childProcessEnv = readEnvFile(['NANOCLAW_CHILD_PROCESS']);
+export const CHILD_PROCESS_MODE =
+  process.env.NANOCLAW_CHILD_PROCESS === '1' ||
+  childProcessEnv.NANOCLAW_CHILD_PROCESS === '1';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -274,12 +287,309 @@ async function buildContainerArgs(
   return args;
 }
 
+/**
+ * Build and compile the agent-runner for child-process mode.
+ * Returns the path to the compiled index.js.
+ */
+function ensureAgentRunnerBuilt(): string {
+  const agentRunnerDir = path.join(process.cwd(), 'container', 'agent-runner');
+  const distIndex = path.join(agentRunnerDir, 'dist', 'index.js');
+
+  // Only rebuild if source is newer than dist
+  const srcIndex = path.join(agentRunnerDir, 'src', 'index.ts');
+  if (
+    fs.existsSync(distIndex) &&
+    fs.existsSync(srcIndex) &&
+    fs.statSync(distIndex).mtimeMs >= fs.statSync(srcIndex).mtimeMs
+  ) {
+    return distIndex;
+  }
+
+  logger.info('Building agent-runner for child-process mode...');
+  execSync('npm run build', { cwd: agentRunnerDir, stdio: 'pipe' });
+  return distIndex;
+}
+
+/**
+ * Prepare the workspace directory structure for child-process mode.
+ * Instead of Docker volume mounts, we use the host paths directly
+ * and set environment variables so the agent-runner finds them.
+ */
+function prepareChildProcessWorkspace(
+  group: RegisteredGroup,
+  isMain: boolean,
+): { workspaceDir: string; env: Record<string, string> } {
+  const projectRoot = process.cwd();
+  const groupDir = resolveGroupFolderPath(group.folder);
+  const groupIpcDir = resolveGroupIpcPath(group.folder);
+  const globalDir = path.join(GROUPS_DIR, 'global');
+
+  // Create workspace structure under data/workspace/{group}/
+  const workspaceDir = path.join(DATA_DIR, 'workspace', group.folder);
+  const wsGroup = path.join(workspaceDir, 'group');
+  const wsGlobal = path.join(workspaceDir, 'global');
+  const wsIpc = path.join(workspaceDir, 'ipc');
+  const wsExtra = path.join(workspaceDir, 'extra');
+
+  // Clean and recreate symlinks
+  fs.mkdirSync(workspaceDir, { recursive: true });
+  for (const link of [wsGroup, wsGlobal, wsIpc]) {
+    try { fs.unlinkSync(link); } catch { /* may not exist */ }
+  }
+  fs.symlinkSync(groupDir, wsGroup);
+  if (!isMain && fs.existsSync(globalDir)) {
+    fs.symlinkSync(globalDir, wsGlobal);
+  }
+
+  // IPC directories
+  fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
+  fs.symlinkSync(groupIpcDir, wsIpc);
+
+  // Extra mounts
+  fs.mkdirSync(wsExtra, { recursive: true });
+
+  // Sessions dir
+  const groupSessionsDir = path.join(DATA_DIR, 'sessions', group.folder, '.claude');
+  fs.mkdirSync(groupSessionsDir, { recursive: true });
+  const settingsFile = path.join(groupSessionsDir, 'settings.json');
+  if (!fs.existsSync(settingsFile)) {
+    fs.writeFileSync(
+      settingsFile,
+      JSON.stringify({
+        env: {
+          CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+          CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
+          CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+        },
+      }, null, 2) + '\n',
+    );
+  }
+
+  // Sync container skills
+  const skillsSrc = path.join(projectRoot, 'container', 'skills');
+  const skillsDst = path.join(groupSessionsDir, 'skills');
+  if (fs.existsSync(skillsSrc)) {
+    for (const skillDir of fs.readdirSync(skillsSrc)) {
+      const srcDir = path.join(skillsSrc, skillDir);
+      if (!fs.statSync(srcDir).isDirectory()) continue;
+      fs.cpSync(srcDir, path.join(skillsDst, skillDir), { recursive: true });
+    }
+  }
+
+  // Read credentials from .env for child process (no OneCLI in Railway)
+  const envVars = readEnvFile([
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_AUTH_TOKEN',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'ANTHROPIC_BASE_URL',
+    'GEMINI_API_KEY',
+    'LEARNING_MAP_API_URL',
+    'LEARNING_MAP_API_KEY',
+    'OLIVIA_STUDENT_ID',
+  ]);
+
+  return {
+    workspaceDir,
+    env: {
+      ...envVars,
+      HOME: groupSessionsDir.replace(/\/.claude$/, ''),
+      TZ: TIMEZONE,
+      NANOCLAW_CHAT_JID: '',  // Set per-call
+      NANOCLAW_GROUP_FOLDER: group.folder,
+      NANOCLAW_IS_MAIN: isMain ? '1' : '0',
+    },
+  };
+}
+
+/**
+ * Run the agent-runner as a direct child process (no Docker).
+ * Used when NANOCLAW_CHILD_PROCESS=1 (Railway deployment).
+ */
+async function runChildProcessAgent(
+  group: RegisteredGroup,
+  input: ContainerInput,
+  onProcess: (proc: ChildProcess, containerName: string) => void,
+  onOutput?: (output: ContainerOutput) => Promise<void>,
+): Promise<ContainerOutput> {
+  const startTime = Date.now();
+  const groupDir = resolveGroupFolderPath(group.folder);
+  fs.mkdirSync(groupDir, { recursive: true });
+
+  const agentRunnerIndex = ensureAgentRunnerBuilt();
+  const mcpServerPath = path.join(path.dirname(agentRunnerIndex), 'ipc-mcp-stdio.js');
+  const { workspaceDir, env } = prepareChildProcessWorkspace(group, input.isMain);
+
+  env.NANOCLAW_CHAT_JID = input.chatJid;
+
+  const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
+  const containerName = `nanoclaw-cp-${safeName}-${Date.now()}`;
+
+  logger.info(
+    { group: group.name, containerName, mode: 'child-process', isMain: input.isMain },
+    'Spawning child-process agent',
+  );
+
+  const logsDir = path.join(groupDir, 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+
+  return new Promise((resolve) => {
+    const child = spawn('node', [agentRunnerIndex], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: path.join(workspaceDir, 'group'),
+      env: { ...process.env, ...env },
+    });
+
+    onProcess(child, containerName);
+
+    let stdout = '';
+    let stderr = '';
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
+
+    child.stdin.write(JSON.stringify(input));
+    child.stdin.end();
+
+    let parseBuffer = '';
+    let newSessionId: string | undefined;
+    let outputChain = Promise.resolve();
+    let hadStreamingOutput = false;
+
+    const configTimeout = group.containerConfig?.timeout || CONTAINER_TIMEOUT;
+    const timeoutMs = Math.max(configTimeout, IDLE_TIMEOUT + 30_000);
+    let timedOut = false;
+
+    const killOnTimeout = () => {
+      timedOut = true;
+      logger.error({ group: group.name, containerName }, 'Child process timeout, killing');
+      child.kill('SIGTERM');
+      setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000);
+    };
+
+    let timeout = setTimeout(killOnTimeout, timeoutMs);
+    const resetTimeout = () => {
+      clearTimeout(timeout);
+      timeout = setTimeout(killOnTimeout, timeoutMs);
+    };
+
+    child.stdout.on('data', (data) => {
+      const chunk = data.toString();
+      if (!stdoutTruncated) {
+        const remaining = CONTAINER_MAX_OUTPUT_SIZE - stdout.length;
+        if (chunk.length > remaining) {
+          stdout += chunk.slice(0, remaining);
+          stdoutTruncated = true;
+        } else {
+          stdout += chunk;
+        }
+      }
+
+      if (onOutput) {
+        parseBuffer += chunk;
+        let startIdx: number;
+        while ((startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1) {
+          const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
+          if (endIdx === -1) break;
+          const jsonStr = parseBuffer.slice(startIdx + OUTPUT_START_MARKER.length, endIdx).trim();
+          parseBuffer = parseBuffer.slice(endIdx + OUTPUT_END_MARKER.length);
+          try {
+            const parsed: ContainerOutput = JSON.parse(jsonStr);
+            if (parsed.newSessionId) newSessionId = parsed.newSessionId;
+            hadStreamingOutput = true;
+            resetTimeout();
+            outputChain = outputChain.then(() => onOutput(parsed));
+          } catch (err) {
+            logger.warn({ group: group.name, error: err }, 'Failed to parse streamed output');
+          }
+        }
+      }
+    });
+
+    child.stderr.on('data', (data) => {
+      const chunk = data.toString();
+      for (const line of chunk.trim().split('\n')) {
+        if (line) logger.debug({ container: group.folder }, line);
+      }
+      if (!stderrTruncated) {
+        const remaining = CONTAINER_MAX_OUTPUT_SIZE - stderr.length;
+        if (chunk.length > remaining) {
+          stderr += chunk.slice(0, remaining);
+          stderrTruncated = true;
+        } else {
+          stderr += chunk;
+        }
+      }
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(timeout);
+      const duration = Date.now() - startTime;
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      const logFile = path.join(logsDir, `child-process-${ts}.log`);
+      fs.writeFileSync(logFile, [
+        `=== Child Process Run Log ===`,
+        `Group: ${group.name}`,
+        `Duration: ${duration}ms`,
+        `Exit Code: ${code}`,
+        `Timed Out: ${timedOut}`,
+        `Had Output: ${hadStreamingOutput}`,
+      ].join('\n'));
+
+      if (timedOut && hadStreamingOutput) {
+        outputChain.then(() => resolve({ status: 'success', result: null, newSessionId }));
+        return;
+      }
+      if (timedOut) {
+        resolve({ status: 'error', result: null, error: `Child process timed out after ${configTimeout}ms` });
+        return;
+      }
+      if (code !== 0) {
+        logger.error({ group: group.name, code, duration }, 'Child process exited with error');
+        resolve({ status: 'error', result: null, error: `Child process exited with code ${code}: ${stderr.slice(-200)}` });
+        return;
+      }
+
+      if (onOutput) {
+        outputChain.then(() => resolve({ status: 'success', result: null, newSessionId }));
+        return;
+      }
+
+      // Legacy non-streaming parse
+      try {
+        const startIdx = stdout.indexOf(OUTPUT_START_MARKER);
+        const endIdx = stdout.indexOf(OUTPUT_END_MARKER);
+        let jsonLine: string;
+        if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+          jsonLine = stdout.slice(startIdx + OUTPUT_START_MARKER.length, endIdx).trim();
+        } else {
+          const lines = stdout.trim().split('\n');
+          jsonLine = lines[lines.length - 1];
+        }
+        resolve(JSON.parse(jsonLine));
+      } catch (err) {
+        resolve({ status: 'error', result: null, error: `Failed to parse output: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    });
+
+    child.on('error', (err) => {
+      clearTimeout(timeout);
+      resolve({ status: 'error', result: null, error: `Child process spawn error: ${err.message}` });
+    });
+  });
+}
+
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
   onProcess: (proc: ChildProcess, containerName: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<ContainerOutput> {
+  // In child-process mode, skip Docker and run agent-runner directly
+  if (CHILD_PROCESS_MODE) {
+    return runChildProcessAgent(group, input, onProcess, onOutput);
+  }
+
   const startTime = Date.now();
 
   const groupDir = resolveGroupFolderPath(group.folder);
