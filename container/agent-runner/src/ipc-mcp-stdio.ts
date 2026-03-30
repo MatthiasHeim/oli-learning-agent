@@ -11,7 +11,8 @@ import fs from 'fs';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
 
-const IPC_DIR = '/workspace/ipc';
+const WORKSPACE_ROOT = process.env.NANOCLAW_WORKSPACE || '/workspace';
+const IPC_DIR = path.join(WORKSPACE_ROOT, 'ipc');
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 
@@ -398,7 +399,7 @@ server.tool(
 
 server.tool(
   'learning_map_record_interaction',
-  'Record a learning interaction (practice, exposure, or assessment) for a student.',
+  'Record a learning interaction (practice, exposure, or assessment) for a student. The API auto-creates new objectives if objective_text doesn\'t match an existing one (similarity < 0.5), so you can freely record interactions for ANY topic — curriculum or organic/emergent learning. Just describe what she learned in objective_text.',
   {
     objective_text: z.string().describe('The learning objective text'),
     interaction_type: z.enum(['practice', 'exposure', 'assessment']).describe('Type of interaction'),
@@ -483,15 +484,17 @@ server.tool(
 
 server.tool(
   'learning_map_add_resource',
-  'Add a learning resource to the Learning Map (e.g. textbook page, video, article).',
+  'Add a learning resource to the Learning Map. Supports photos (with base64 image), textbook pages, homework, physical items (toys, Lego sets, books), and more. The API auto-generates embeddings for semantic search and auto-links to matching learning objectives.',
   {
-    title: z.string().describe('Resource title'),
-    description: z.string().describe('Resource description'),
-    resource_type: z.string().describe('Type (e.g. "article", "video", "worksheet", "textbook", "activity")'),
-    tags: z.array(z.string()).optional().describe('Tags for categorization'),
+    title: z.string().describe('Resource title (e.g. "Lego Technic Simple Machines Set", "Mathe-Hausaufgabe Brüche")'),
+    description: z.string().describe('Detailed description of the resource and what it can be used for'),
+    resource_type: z.string().describe('Type: "book_page", "homework", "drawing", "toy", "lego_set", "bookshelf", "art_supply", "book", "photo", "youtube_video", "article", "exercise", "game", "other"'),
+    tags: z.array(z.string()).optional().describe('Tags for categorization (e.g. ["lego", "stem", "building"])'),
     source_url: z.string().optional().describe('URL if applicable'),
-    extracted_text: z.string().optional().describe('Extracted text content'),
-    objective_texts: z.array(z.string()).optional().describe('Related learning objective texts'),
+    extracted_text: z.string().optional().describe('Extracted/OCR text content from the resource'),
+    objective_texts: z.array(z.string()).optional().describe('Related learning objective descriptions — auto-matched to existing objectives'),
+    image_base64: z.string().optional().describe('Base64-encoded image data (for photos of physical resources, homework, etc.)'),
+    added_by: z.string().default('agent').describe('Who added: "parent", "agent", or "student"'),
   },
   async (args) => {
     try {
@@ -505,6 +508,8 @@ server.tool(
           source_url: args.source_url,
           extracted_text: args.extracted_text,
           objective_texts: args.objective_texts,
+          image_base64: args.image_base64,
+          added_by: args.added_by || 'agent',
         }),
       });
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
@@ -610,6 +615,187 @@ server.tool(
     } catch (err) {
       return {
         content: [{ type: 'text' as const, text: `Error generating image: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// YouTube transcript tool
+// ---------------------------------------------------------------------------
+
+function extractVideoId(url: string): string | null {
+  const patterns = [
+    /youtu\.be\/([^?&#]+)/,
+    /youtube\.com\/watch\?.*v=([^&#]+)/,
+    /youtube\.com\/embed\/([^?&#]+)/,
+    /youtube\.com\/v\/([^?&#]+)/,
+    /youtube\.com\/shorts\/([^?&#]+)/,
+  ];
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match) return match[1];
+  }
+  // Could be a raw video ID
+  return /^[a-zA-Z0-9_-]{11}$/.test(url) ? url : null;
+}
+
+/**
+ * Fetch transcript using youtubei.js (InnerTube API).
+ * Falls back to raw InnerTube ANDROID client if youtubei.js fails.
+ */
+async function fetchYouTubeTranscript(videoId: string): Promise<{
+  title: string;
+  transcript: Array<{ text: string; startMs: number }>;
+  language: string;
+}> {
+  // Primary: youtubei.js
+  try {
+    const { Innertube } = await import('youtubei.js');
+    const youtube = await Innertube.create();
+    const info = await youtube.getInfo(videoId);
+    const title = info.basic_info.title || 'Unknown';
+
+    const transcriptData = await info.getTranscript();
+    const body = (transcriptData as unknown as {
+      transcript?: { content?: { body?: { initial_segments?: Array<{
+        snippet?: { text?: string };
+        start_ms?: string | number;
+      }> } } };
+    }).transcript?.content?.body;
+    const segments = body?.initial_segments || [];
+
+    const transcript = segments
+      .filter((s) => s.snippet?.text)
+      .map((s) => ({
+        text: s.snippet!.text!,
+        startMs: typeof s.start_ms === 'string' ? parseInt(s.start_ms, 10) : (s.start_ms || 0),
+      }));
+
+    if (transcript.length === 0) {
+      throw new Error('No transcript segments found');
+    }
+
+    return { title, transcript, language: 'auto' };
+  } catch (primaryErr) {
+    const errMsg = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
+
+    // Fallback: raw InnerTube ANDROID client
+    try {
+      const playerRes = await fetch('https://www.youtube.com/youtubei/v1/player', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          context: {
+            client: {
+              clientName: 'ANDROID',
+              clientVersion: '20.10.38',
+              androidSdkVersion: 30,
+            },
+          },
+          videoId,
+        }),
+      });
+
+      if (!playerRes.ok) {
+        throw new Error(`InnerTube player returned ${playerRes.status}`);
+      }
+
+      const playerData = await playerRes.json() as {
+        videoDetails?: { title?: string };
+        captions?: {
+          playerCaptionsTracklistRenderer?: {
+            captionTracks?: Array<{
+              baseUrl?: string;
+              languageCode?: string;
+              kind?: string;
+            }>;
+          };
+        };
+      };
+
+      const title = playerData.videoDetails?.title || 'Unknown';
+      const tracks = playerData.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+
+      // Prefer English, then any auto-generated, then first available
+      const track =
+        tracks.find((t) => t.languageCode === 'en') ||
+        tracks.find((t) => t.kind === 'asr') ||
+        tracks[0];
+
+      if (!track?.baseUrl) {
+        throw new Error('No caption tracks available for this video');
+      }
+
+      const captionRes = await fetch(track.baseUrl);
+      const xml = await captionRes.text();
+
+      // Parse simple caption XML: <text start="1.23" dur="4.56">content</text>
+      const transcript: Array<{ text: string; startMs: number }> = [];
+      const regex = /<text\s+start="([^"]+)"[^>]*>([\s\S]*?)<\/text>/g;
+      let match;
+      while ((match = regex.exec(xml)) !== null) {
+        const startSec = parseFloat(match[1]);
+        const text = match[2]
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'")
+          .replace(/<[^>]+>/g, '')
+          .trim();
+        if (text) {
+          transcript.push({ text, startMs: Math.round(startSec * 1000) });
+        }
+      }
+
+      if (transcript.length === 0) {
+        throw new Error('Failed to parse caption XML');
+      }
+
+      return { title, transcript, language: track.languageCode || 'unknown' };
+    } catch (fallbackErr) {
+      const fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+      throw new Error(`Primary (youtubei.js): ${errMsg}. Fallback (InnerTube ANDROID): ${fallbackMsg}`);
+    }
+  }
+}
+
+server.tool(
+  'youtube_transcript',
+  `Fetch the transcript of a YouTube video. Accepts any YouTube URL format (youtu.be, youtube.com/watch, shorts) or a raw video ID. Returns the video title and full transcript with timestamps. Use this when Olivia shares a YouTube link — then analyze the content, record relevant learning interactions, and discuss the video with her.`,
+  {
+    url: z.string().describe('YouTube URL or video ID'),
+  },
+  async (args) => {
+    const videoId = extractVideoId(args.url);
+    if (!videoId) {
+      return {
+        content: [{ type: 'text' as const, text: `Could not extract video ID from: ${args.url}` }],
+        isError: true,
+      };
+    }
+
+    try {
+      const { title, transcript, language } = await fetchYouTubeTranscript(videoId);
+
+      // Format transcript with timestamps
+      const formatted = transcript.map((s) => {
+        const totalSec = Math.floor(s.startMs / 1000);
+        const min = Math.floor(totalSec / 60);
+        const sec = totalSec % 60;
+        return `[${min}:${sec.toString().padStart(2, '0')}] ${s.text}`;
+      }).join('\n');
+
+      const result = `*${title}*\nLanguage: ${language}\nVideo: https://youtu.be/${videoId}\n\n--- Transcript ---\n${formatted}`;
+
+      return {
+        content: [{ type: 'text' as const, text: result }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Failed to fetch transcript: ${err instanceof Error ? err.message : String(err)}` }],
         isError: true,
       };
     }
