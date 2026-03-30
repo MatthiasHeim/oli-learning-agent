@@ -334,7 +334,11 @@ function prepareChildProcessWorkspace(
   // Clean and recreate symlinks
   fs.mkdirSync(workspaceDir, { recursive: true });
   for (const link of [wsGroup, wsGlobal, wsIpc]) {
-    try { fs.unlinkSync(link); } catch { /* may not exist */ }
+    try {
+      fs.unlinkSync(link);
+    } catch {
+      /* may not exist */
+    }
   }
   fs.symlinkSync(groupDir, wsGroup);
   if (!isMain && fs.existsSync(globalDir)) {
@@ -351,19 +355,28 @@ function prepareChildProcessWorkspace(
   fs.mkdirSync(wsExtra, { recursive: true });
 
   // Sessions dir
-  const groupSessionsDir = path.join(DATA_DIR, 'sessions', group.folder, '.claude');
+  const groupSessionsDir = path.join(
+    DATA_DIR,
+    'sessions',
+    group.folder,
+    '.claude',
+  );
   fs.mkdirSync(groupSessionsDir, { recursive: true });
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
   if (!fs.existsSync(settingsFile)) {
     fs.writeFileSync(
       settingsFile,
-      JSON.stringify({
-        env: {
-          CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-          CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-          CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+      JSON.stringify(
+        {
+          env: {
+            CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+            CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
+            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+          },
         },
-      }, null, 2) + '\n',
+        null,
+        2,
+      ) + '\n',
     );
   }
 
@@ -384,6 +397,8 @@ function prepareChildProcessWorkspace(
     'ANTHROPIC_AUTH_TOKEN',
     'CLAUDE_CODE_OAUTH_TOKEN',
     'ANTHROPIC_BASE_URL',
+    'CLAUDE_CODE_USE_BEDROCK',
+    'CLAUDE_CODE_MODEL',
     'GEMINI_API_KEY',
     'LEARNING_MAP_API_URL',
     'LEARNING_MAP_API_KEY',
@@ -396,7 +411,8 @@ function prepareChildProcessWorkspace(
       ...envVars,
       HOME: groupSessionsDir.replace(/\/.claude$/, ''),
       TZ: TIMEZONE,
-      NANOCLAW_CHAT_JID: '',  // Set per-call
+      NANOCLAW_WORKSPACE: workspaceDir,
+      NANOCLAW_CHAT_JID: '', // Set per-call
       NANOCLAW_GROUP_FOLDER: group.folder,
       NANOCLAW_IS_MAIN: isMain ? '1' : '0',
     },
@@ -418,8 +434,14 @@ async function runChildProcessAgent(
   fs.mkdirSync(groupDir, { recursive: true });
 
   const agentRunnerIndex = ensureAgentRunnerBuilt();
-  const mcpServerPath = path.join(path.dirname(agentRunnerIndex), 'ipc-mcp-stdio.js');
-  const { workspaceDir, env } = prepareChildProcessWorkspace(group, input.isMain);
+  const mcpServerPath = path.join(
+    path.dirname(agentRunnerIndex),
+    'ipc-mcp-stdio.js',
+  );
+  const { workspaceDir, env } = prepareChildProcessWorkspace(
+    group,
+    input.isMain,
+  );
 
   env.NANOCLAW_CHAT_JID = input.chatJid;
 
@@ -427,7 +449,12 @@ async function runChildProcessAgent(
   const containerName = `nanoclaw-cp-${safeName}-${Date.now()}`;
 
   logger.info(
-    { group: group.name, containerName, mode: 'child-process', isMain: input.isMain },
+    {
+      group: group.name,
+      containerName,
+      mode: 'child-process',
+      isMain: input.isMain,
+    },
     'Spawning child-process agent',
   );
 
@@ -462,9 +489,14 @@ async function runChildProcessAgent(
 
     const killOnTimeout = () => {
       timedOut = true;
-      logger.error({ group: group.name, containerName }, 'Child process timeout, killing');
+      logger.error(
+        { group: group.name, containerName },
+        'Child process timeout, killing',
+      );
       child.kill('SIGTERM');
-      setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000);
+      setTimeout(() => {
+        if (!child.killed) child.kill('SIGKILL');
+      }, 5000);
     };
 
     let timeout = setTimeout(killOnTimeout, timeoutMs);
@@ -491,7 +523,9 @@ async function runChildProcessAgent(
         while ((startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1) {
           const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
           if (endIdx === -1) break;
-          const jsonStr = parseBuffer.slice(startIdx + OUTPUT_START_MARKER.length, endIdx).trim();
+          const jsonStr = parseBuffer
+            .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
+            .trim();
           parseBuffer = parseBuffer.slice(endIdx + OUTPUT_END_MARKER.length);
           try {
             const parsed: ContainerOutput = JSON.parse(jsonStr);
@@ -500,7 +534,10 @@ async function runChildProcessAgent(
             resetTimeout();
             outputChain = outputChain.then(() => onOutput(parsed));
           } catch (err) {
-            logger.warn({ group: group.name, error: err }, 'Failed to parse streamed output');
+            logger.warn(
+              { group: group.name, error: err },
+              'Failed to parse streamed output',
+            );
           }
         }
       }
@@ -527,31 +564,49 @@ async function runChildProcessAgent(
       const duration = Date.now() - startTime;
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
       const logFile = path.join(logsDir, `child-process-${ts}.log`);
-      fs.writeFileSync(logFile, [
-        `=== Child Process Run Log ===`,
-        `Group: ${group.name}`,
-        `Duration: ${duration}ms`,
-        `Exit Code: ${code}`,
-        `Timed Out: ${timedOut}`,
-        `Had Output: ${hadStreamingOutput}`,
-      ].join('\n'));
+      fs.writeFileSync(
+        logFile,
+        [
+          `=== Child Process Run Log ===`,
+          `Group: ${group.name}`,
+          `Duration: ${duration}ms`,
+          `Exit Code: ${code}`,
+          `Timed Out: ${timedOut}`,
+          `Had Output: ${hadStreamingOutput}`,
+        ].join('\n'),
+      );
 
       if (timedOut && hadStreamingOutput) {
-        outputChain.then(() => resolve({ status: 'success', result: null, newSessionId }));
+        outputChain.then(() =>
+          resolve({ status: 'success', result: null, newSessionId }),
+        );
         return;
       }
       if (timedOut) {
-        resolve({ status: 'error', result: null, error: `Child process timed out after ${configTimeout}ms` });
+        resolve({
+          status: 'error',
+          result: null,
+          error: `Child process timed out after ${configTimeout}ms`,
+        });
         return;
       }
       if (code !== 0) {
-        logger.error({ group: group.name, code, duration }, 'Child process exited with error');
-        resolve({ status: 'error', result: null, error: `Child process exited with code ${code}: ${stderr.slice(-200)}` });
+        logger.error(
+          { group: group.name, code, duration },
+          'Child process exited with error',
+        );
+        resolve({
+          status: 'error',
+          result: null,
+          error: `Child process exited with code ${code}: ${stderr.slice(-200)}`,
+        });
         return;
       }
 
       if (onOutput) {
-        outputChain.then(() => resolve({ status: 'success', result: null, newSessionId }));
+        outputChain.then(() =>
+          resolve({ status: 'success', result: null, newSessionId }),
+        );
         return;
       }
 
@@ -561,20 +616,30 @@ async function runChildProcessAgent(
         const endIdx = stdout.indexOf(OUTPUT_END_MARKER);
         let jsonLine: string;
         if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-          jsonLine = stdout.slice(startIdx + OUTPUT_START_MARKER.length, endIdx).trim();
+          jsonLine = stdout
+            .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
+            .trim();
         } else {
           const lines = stdout.trim().split('\n');
           jsonLine = lines[lines.length - 1];
         }
         resolve(JSON.parse(jsonLine));
       } catch (err) {
-        resolve({ status: 'error', result: null, error: `Failed to parse output: ${err instanceof Error ? err.message : String(err)}` });
+        resolve({
+          status: 'error',
+          result: null,
+          error: `Failed to parse output: ${err instanceof Error ? err.message : String(err)}`,
+        });
       }
     });
 
     child.on('error', (err) => {
       clearTimeout(timeout);
-      resolve({ status: 'error', result: null, error: `Child process spawn error: ${err.message}` });
+      resolve({
+        status: 'error',
+        result: null,
+        error: `Child process spawn error: ${err.message}`,
+      });
     });
   });
 }

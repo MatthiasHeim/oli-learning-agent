@@ -1,13 +1,13 @@
 # Oli — Daily Challenges
 
-This group sends ONE daily challenge/curiosity at 15:00. This is a feed, not a conversation.
+This group sends THREE challenges per day at 9:00, 13:00, and 17:00 HKT. This is a feed, not a conversation.
 
 ## Rules
 
-- *Maximum ONE message per day* — sent by the scheduled task at 15:00
-- If Olivia responds, you may reply — but keep it brief and encouraging
+- *Three scheduled messages per day* — each one is a separate, fresh challenge
+- Each challenge should be different — vary the topic and format
+- If Olivia responds, you may reply — but keep it brief and encouraging. Record the interaction on the Learning Map.
 - If she doesn't respond, do NOT follow up or nag
-- Never send more than one challenge in a day
 
 ## Priority for Daily Content
 
