@@ -546,7 +546,10 @@ async function runChildProcessAgent(
     child.stderr.on('data', (data) => {
       const chunk = data.toString();
       for (const line of chunk.trim().split('\n')) {
-        if (line) logger.debug({ container: group.folder }, line);
+        if (!line) continue;
+        // Log claude-stderr lines at info so they appear in Railway logs
+        const level = line.includes('[claude-stderr]') ? 'info' : 'debug';
+        logger[level]({ container: group.folder }, line);
       }
       if (!stderrTruncated) {
         const remaining = CONTAINER_MAX_OUTPUT_SIZE - stderr.length;

@@ -416,6 +416,7 @@ async function runQuery(
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
+      stderr: (text: string) => { log(`[claude-stderr] ${text.trim()}`); },
       mcpServers: {
         nanoclaw: {
           command: 'node',
