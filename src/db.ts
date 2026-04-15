@@ -157,6 +157,28 @@ export function initDatabase(): void {
 
   // Migrate from JSON files if they exist
   migrateJsonState();
+
+  // Seed groups from seed-groups.json (project root) if DB has no groups
+  const groups = getAllRegisteredGroups();
+  if (Object.keys(groups).length === 0) {
+    const seedPath = path.join(process.cwd(), 'seed-groups.json');
+    if (fs.existsSync(seedPath)) {
+      try {
+        const seed = JSON.parse(fs.readFileSync(seedPath, 'utf-8'));
+        for (const [jid, group] of Object.entries(seed)) {
+          const g = group as RegisteredGroup;
+          g.added_at = g.added_at || new Date().toISOString();
+          setRegisteredGroup(jid, g);
+          logger.info(
+            { jid, folder: g.folder },
+            'Seeded group from seed-groups.json',
+          );
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Failed to seed groups from seed-groups.json');
+      }
+    }
+  }
 }
 
 /** @internal - for tests only. Creates a fresh in-memory database. */

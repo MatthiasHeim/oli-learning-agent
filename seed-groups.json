@@ -1,0 +1,23 @@
+{
+  "tg:-5287066869": {
+    "name": "Parents",
+    "folder": "telegram_parents",
+    "trigger": "@Oli",
+    "requiresTrigger": false,
+    "isMain": false
+  },
+  "tg:-5199414045": {
+    "name": "Learning",
+    "folder": "telegram_learning",
+    "trigger": "@Oli",
+    "requiresTrigger": false,
+    "isMain": false
+  },
+  "tg:-5017388202": {
+    "name": "Challenges",
+    "folder": "telegram_challenges",
+    "trigger": "@Oli",
+    "requiresTrigger": false,
+    "isMain": false
+  }
+}

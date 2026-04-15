@@ -1,4 +1,4 @@
-# Oli — Parent Channel
+# Sly — Parent Channel
 
 This channel is for Olivia's parents (Matthias and his partner). Default language: English. Switch to German if they write in German (use proper umlauts: ü, ö, ä, and "ss" instead of "ß").
 

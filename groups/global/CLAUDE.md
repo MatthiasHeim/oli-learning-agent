@@ -79,6 +79,11 @@ When you observe something important about how Olivia learns, add it to the appr
 - Processes internally before responding — give her space
 - Connects through stories and narratives over abstract explanations
 - Loves animals, art, cooking, and building things
+- Emoji as learning prompts — sends an emoji to indicate what she wants to explore next (e.g. 🚑 → ambulance science, 🇨🇭 → Swiss flag). Follow the emoji, don't overthink it (2026-04-03)
+- Self-directed curiosity chains: once curious about one topic she cascades into related ones spontaneously (ambulance → Swiss flag → HK flag → passports). Ride the wave, don't interrupt (2026-04-03)
+- Strong verbal reporter — detailed, vivid descriptions when observing things she cares about ("sleeping like a sausage in a hot dog bun"). Voice messages lower friction for reporting back (2026-04-03)
+- Persistent experimenter — tried 5+ slime recipes without frustration, adapting each time. Failure doesn't discourage her, it redirects her (2026-04-04)
+- Stops to clarify unknown vocabulary rather than guessing or skipping — good reading habit to reinforce (2026-04-04)
 <!-- Add more observations as you learn them. Include dates. -->
 
 ### What To Avoid
@@ -87,11 +92,14 @@ When you observe something important about how Olivia learns, add it to the appr
 - Generic praise ("Great job!") — be specific
 - Pushing her to do more when she's done
 - Teacher voice — you're a companion, not an authority
+- Giving menus of options when she's hit the "idk" wall — she declines everything. When restless, go straight to off-screen/hands-on/siblings. Don't offer more choices (2026-04-03)
+- Telling her the answer — she called this out directly on 2026-04-04: "it's not even a challenge if you tell me the answer." Never reveal answers; ask guiding questions only
 <!-- Add more observations as you learn them. Include dates. -->
 
 ### Current Interests
 - Recently back in Hong Kong — adjusting, rediscovering the city
 - Korea trip experiences (food, culture, travel)
+- Has two pet dogs: Udon (7-month-old poodle, light brown, from HK, birthday 30 Aug) and Cho Cho (1-year-old Chihuahua, white with brown patches, from Switzerland, birthday 8 Oct) — as of 2026-04-02
 <!-- Add more as you discover them. Include dates. -->
 
 ### Parent Notes
@@ -101,6 +109,13 @@ When you observe something important about how Olivia learns, add it to the appr
 <!-- Parents will add more via the parent chat. Include dates. -->
 
 ### Engagement Patterns
+- Voluntarily wrote detailed German descriptions of her pets unprompted — personal topics unlock writing (2026-04-02)
+- Responded to morning challenge within 15 minutes (decimal math, 9:15 AM HKT) — mornings seem to be active learning time (2026-04-02)
+- Emoji-driven exploration (April 3): sent 🚑→🇨🇭→🇭🇰 to navigate a 20-minute self-directed geography/history session. No prompting needed — just follow the emoji and explain
+- Hits an engagement wall around 11 AM after ~2 hours — menus of options stop working. Off-screen activities (dog observation, sibling play) restore engagement at this point (2026-04-03)
+- Algebra confidence growing: said "no more maths" then immediately solved 2x+5=17 correctly without scaffolding (2026-04-03)
+- Explicitly asked for harder challenges (2026-04-04) — said current ones are "a bit too easy". Step up difficulty across all subjects.
+- Called out a repeated challenge topic immediately (2026-04-10): "We already talked about this last time." She notices repetition and flags it — avoid recycling recent topics, especially in the challenges group.
 <!-- What formats/times/approaches get the best engagement. Include dates. -->
 
 ## Language
